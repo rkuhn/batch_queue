@@ -1,14 +1,17 @@
 #![doc = include_str!("../README.md")]
 
 use cache_padded::CachePadded;
-use futures::task::AtomicWaker;
+use futures::{task::AtomicWaker, Future, Stream};
+use pin_project::pin_project;
 use std::{
     cell::UnsafeCell,
     mem::MaybeUninit,
+    pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    task::{Context, Poll},
 };
 
 mod iterator;
@@ -18,8 +21,13 @@ mod sender;
 mod tests;
 
 pub use iterator::BucketIter;
-pub use receiver::{ReceiveFuture, Receiver};
-pub use sender::{SendFuture, Sender};
+pub use receiver::{ReceiveFuture, Receiver, TryRecvError};
+pub use sender::{SendFuture, Sender, TrySendError};
+
+/// Error generated from send or receive operations when the other side of the
+/// channel has been dropped
+#[derive(Debug, Clone, PartialEq)]
+pub struct Closed;
 
 struct Bucket<T, const N: usize> {
     data: [MaybeUninit<T>; N],
@@ -47,6 +55,20 @@ struct Inner<T, const N: usize> {
     cycle_shift: u32,
 }
 
+impl<T, const N: usize> Drop for Inner<T, N> {
+    fn drop(&mut self) {
+        while let Some(read_pos) = self.do_recv() {
+            let bucket = unsafe { &mut *self.buckets[self.slot(read_pos)].get() };
+            for idx in 0..bucket.items {
+                unsafe { std::ptr::drop_in_place(bucket.data[idx].as_mut_ptr()) };
+            }
+            self.reader
+                .position
+                .store(self.next(read_pos), Ordering::Relaxed);
+        }
+    }
+}
+
 impl<T, const N: usize> Inner<T, N> {
     fn do_recv(&self) -> Option<usize> {
         let write_pos = self.writer.position.load(Ordering::Acquire);
@@ -58,7 +80,7 @@ impl<T, const N: usize> Inner<T, N> {
         }
     }
 
-    fn do_send(&self, value: T) -> Result<(), T> {
+    fn do_send(&self, value: T) -> Result<bool, T> {
         let write_pos = self.writer.position.load(Ordering::Relaxed);
         let write_slot = self.slot(write_pos);
         let read_pos = self.reader.position.load(Ordering::Acquire);
@@ -76,8 +98,10 @@ impl<T, const N: usize> Inner<T, N> {
                 let next_pos = self.next(write_pos);
                 self.writer.position.store(next_pos, Ordering::Release);
                 self.reader.waker.wake();
+                Ok(true)
+            } else {
+                Ok(false)
             }
-            Ok(())
         }
     }
 
@@ -115,6 +139,11 @@ impl<T, const N: usize> Inner<T, N> {
     }
 }
 
+/// Create a new batching queue
+///
+/// The bucket size is given as a const generic while the number of buckets are given as
+/// a function parameter. The transfer from sender to receiver happens only in units of
+/// one bucket (which may not be full, see [`close_batch`](struct.Sender.html#close_batch)).
 pub fn batching_queue<T, const N: usize>(buckets: usize) -> (Sender<T, N>, Receiver<T, N>) {
     let size = buckets;
     let buckets = {
@@ -129,4 +158,70 @@ pub fn batching_queue<T, const N: usize>(buckets: usize) -> (Sender<T, N>, Recei
         cycle_shift: usize::BITS - size.leading_zeros(),
     });
     (Sender::new(inner.clone()), Receiver::new(inner))
+}
+
+/// Pipe a stream into a batching sender
+///
+/// This will poll the stream for as long as items are forthcoming and the current bucket still
+/// has room. When the latter condition is hit, the task is rescheduled to make room for other
+/// tasks to run on the current executor.
+pub fn pipe<S: Stream, const N: usize>(source: S, sink: Sender<S::Item, N>) -> Pipe<S, N> {
+    Pipe {
+        source,
+        sink,
+        item: None,
+    }
+}
+
+/// The Future created by [`pipe`](fn.pipe.html)
+///
+/// It will resolve once the source stream ends or the target queue is closed
+/// (by dropping its receiver).
+#[pin_project]
+#[must_use = "streams do nothing without being polled"]
+pub struct Pipe<S: Stream, const N: usize> {
+    #[pin]
+    source: S,
+    sink: Sender<S::Item, N>,
+    item: Option<S::Item>,
+}
+
+impl<S: Stream, const N: usize> Future for Pipe<S, N> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        if let Some(item) = this.item.take() {
+            match this.sink.try_poll(item, cx) {
+                Ok(_) => {} // continue
+                Err(TrySendError::Full(item)) => {
+                    *this.item = Some(item);
+                    return Poll::Pending;
+                }
+                Err(TrySendError::Closed) => return Poll::Ready(()),
+            }
+        }
+        let ret = loop {
+            match this.source.as_mut().poll_next(cx) {
+                Poll::Ready(i) => match i {
+                    Some(item) => match this.sink.try_poll(item, cx) {
+                        Ok(batch_closed) if batch_closed => {
+                            cx.waker().wake_by_ref();
+                            break Poll::Pending;
+                        }
+                        Ok(_) => {} // continue
+                        Err(TrySendError::Full(item)) => {
+                            *this.item = Some(item);
+                            break Poll::Pending;
+                        }
+                        Err(TrySendError::Closed) => break Poll::Ready(()),
+                    },
+                    None => break Poll::Ready(()),
+                },
+                Poll::Pending => break Poll::Pending,
+            };
+        };
+        this.sink.close_batch();
+        ret
+    }
 }

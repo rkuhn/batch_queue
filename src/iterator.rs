@@ -1,5 +1,9 @@
 use super::*;
 
+/// Iterator over the items received in one batch
+///
+/// This iterator will only hand over the internal bucket to the sender for refill
+/// once the iterator is dropped, so consume it quickly.
 pub struct BucketIter<'a, T, const N: usize> {
     inner: &'a Inner<T, N>,
     read_pos: usize,

@@ -1,12 +1,22 @@
 [package]
 name = "batching_queue"
 version = "0.1.0"
+authors = ["Roland Kuhn [info@rolandkuhn.com]"]
+description = "A single-producer single-consumer Rust queue with smart batching"
 edition = "2021"
+documentation = "https://docs.rs/batching_queue"
+readme = "README.md"
+repository = "https://github.com/rkuhn/batching_queue"
+license = "MIT or Apache-v2.0"
+keywords = ["spsc", "queue", "batching"]
+categories = ["concurrency"]
 
 [dependencies]
 cache-padded = "1.1.1"
 futures = "0.3.17"
+pin-project = "1.0.8"
 
 [dev-dependencies]
 itertools = "0.10.3"
 tokio = { version = "1.15.0", features = ["macros", "rt-multi-thread"] }
+tokio-test = "0.4.2"

@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU64;
 
 #[test]
 fn capacity() {
-    let (mut tx, mut rx) = batching_queue::<u32, 3>(3);
+    let (mut tx, mut rx) = batch_queue::<u32, 3>(3);
 
     assert_eq!(tx.try_send(1), Ok(false));
     tx.close_batch();
@@ -45,7 +45,7 @@ fn capacity() {
 
 #[test]
 fn drop_rx() {
-    let (mut tx, rx) = batching_queue::<u32, 2>(3);
+    let (mut tx, rx) = batch_queue::<u32, 2>(3);
 
     assert_eq!(tx.try_send(1), Ok(false));
     drop(rx);
@@ -72,7 +72,7 @@ fn drop_items() {
         }
     }
 
-    let (mut tx, mut rx) = batching_queue::<D, 2>(3);
+    let (mut tx, mut rx) = batch_queue::<D, 2>(3);
 
     assert_eq!(tx.try_send(D(2)), Ok(false));
     assert_eq!(tx.try_send(D(3)), Ok(true));
@@ -99,7 +99,7 @@ fn drop_items() {
 
 #[tokio::test]
 async fn drop_async() {
-    let (mut tx, mut rx) = batching_queue::<u32, 5>(3);
+    let (mut tx, mut rx) = batch_queue::<u32, 5>(3);
     let handle = tokio::spawn(async move {
         tx.send(1).await?;
         Result::<_, Closed>::Ok(())
@@ -108,8 +108,8 @@ async fn drop_async() {
     assert_eq!(rx.recv_batch().await, Err(Closed));
     handle.await.unwrap().unwrap();
 
-    let (mut tx1, mut rx1) = batching_queue::<u32, 5>(3);
-    let (tx2, mut rx2) = batching_queue::<u32, 5>(3);
+    let (mut tx1, mut rx1) = batch_queue::<u32, 5>(3);
+    let (tx2, mut rx2) = batch_queue::<u32, 5>(3);
     let handle = tokio::spawn(async move {
         rx1.recv().await?;
         drop(rx1);
@@ -127,7 +127,7 @@ async fn drop_async() {
 
 #[tokio::test]
 async fn stress() {
-    let (mut tx, mut rx) = batching_queue::<u32, 5>(3);
+    let (mut tx, mut rx) = batch_queue::<u32, 5>(3);
     #[cfg(debug_assertions)]
     const N: u32 = 1_000_000;
     #[cfg(not(debug_assertions))]
@@ -150,7 +150,7 @@ async fn stress() {
 
 #[tokio::test]
 async fn stream() {
-    let (tx, mut rx) = batching_queue::<u32, 128>(20);
+    let (tx, mut rx) = batch_queue::<u32, 128>(20);
     #[cfg(debug_assertions)]
     const N: u32 = 10_000_000;
     #[cfg(not(debug_assertions))]

@@ -9,9 +9,9 @@ One nice feature of this queue is that all buckets are preallocated, so unless y
 
 ```rust
 # tokio_test::block_on(async {
-use batching_queue::{batching_queue, pipe};
+use batch_queue::{batch_queue, pipe};
 
-let (tx, mut rx) = batching_queue::<u32, 128>(20);
+let (tx, mut rx) = batch_queue::<u32, 128>(20);
 const N: u32 = 10_000_000;
 
 tokio::spawn(async move {

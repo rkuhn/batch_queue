@@ -144,7 +144,7 @@ impl<T, const N: usize> Inner<T, N> {
 /// The bucket size is given as a const generic while the number of buckets are given as
 /// a function parameter. The transfer from sender to receiver happens only in units of
 /// one bucket (which may not be full, see [`close_batch`](struct.Sender.html#close_batch)).
-pub fn batching_queue<T, const N: usize>(buckets: usize) -> (Sender<T, N>, Receiver<T, N>) {
+pub fn batch_queue<T, const N: usize>(buckets: usize) -> (Sender<T, N>, Receiver<T, N>) {
     let size = buckets;
     let buckets = {
         let mut b = Vec::with_capacity(size);
